@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { TARJETAS, CATEGORIAS, ExpensePayload } from "@/lib/data";
+import { CATEGORIAS, ExpensePayload } from "@/lib/data";
 import CardSelect from "./CardSelect";
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 interface ParsedExpense {
   tipo: string;
@@ -11,6 +13,16 @@ interface ParsedExpense {
   nota: string;
   monto: number | null;
   tarjeta: string | null;
+}
+
+// Editable item in the confirm stage
+interface ConfirmItem {
+  tipo: string;
+  categoria: string;
+  subcategoria: string;
+  nota: string;
+  monto: string;
+  tarjeta: string;
 }
 
 type Stage =
@@ -26,24 +38,37 @@ interface VoiceInputProps {
   onConfirm: (fields: Partial<ExpensePayload>) => void;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnySpeechRecognition = any;
+// ── Speech recognition ────────────────────────────────────────────────────────
 
-function getSR(): AnySpeechRecognition | null {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getSR(): any | null {
   if (typeof window === "undefined") return null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition ?? null;
 }
 
+function toItems(data: ParsedExpense | ParsedExpense[]): ConfirmItem[] {
+  const arr = Array.isArray(data) ? data : [data];
+  return arr.map((d) => ({
+    tipo: d.tipo ?? "Gasto",
+    categoria: d.categoria ?? "",
+    subcategoria: d.subcategoria ?? "",
+    nota: d.nota ?? "",
+    monto: d.monto != null ? String(d.monto) : "",
+    tarjeta: d.tarjeta ?? "",
+  }));
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
 export default function VoiceInput({ onConfirm }: VoiceInputProps) {
   const [stage, setStage] = useState<Stage>("idle");
   const [transcript, setTranscript] = useState("");
-  const [parsed, setParsed] = useState<ParsedExpense | null>(null);
-  const [monto, setMonto] = useState("");
-  const [tarjeta, setTarjeta] = useState("");
+  const [items, setItems] = useState<ConfirmItem[]>([]);
   const [errorMsg, setErrorMsg] = useState("");
   const [supported, setSupported] = useState(true);
   const [textInput, setTextInput] = useState("");
+  const [savedCount, setSavedCount] = useState(0);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recogRef = useRef<any>(null);
 
@@ -51,32 +76,50 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
     if (!getSR()) setSupported(false);
   }, []);
 
+  // Update a single field of a single item
+  function setField<K extends keyof ConfirmItem>(
+    idx: number,
+    key: K,
+    val: ConfirmItem[K]
+  ) {
+    setItems((prev) =>
+      prev.map((item, i) => (i === idx ? { ...item, [key]: val } : item))
+    );
+  }
+
+  // When category changes, reset subcategory to first available
+  function handleCatChange(idx: number, cat: string) {
+    setItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== idx) return item;
+        const subs = CATEGORIAS[item.tipo]?.[cat] ?? [];
+        return { ...item, categoria: cat, subcategoria: subs[0] ?? "" };
+      })
+    );
+  }
+
+  // ── Recording ────────────────────────────────────────────────────────────────
+
   const startRecording = useCallback(() => {
     const SR = getSR();
     if (!SR) return;
-
     const r = new SR();
     r.lang = "es-MX";
     r.interimResults = true;
     r.continuous = false;
     recogRef.current = r;
-
-    r.onresult = (e: { results: { [key: number]: { [key: number]: { transcript: string } } } }) => {
-      const t = Array.from(Object.values(e.results) as { [key: number]: { transcript: string } }[])
+    r.onresult = (e: { results: { [k: number]: { [k: number]: { transcript: string } } } }) => {
+      const t = Array.from(
+        Object.values(e.results) as { [k: number]: { transcript: string } }[]
+      )
         .map((res) => res[0].transcript)
         .join("");
       setTranscript(t);
     };
-
     r.onerror = () => {
       setStage("error");
       setErrorMsg("No se pudo acceder al micrófono");
     };
-
-    r.onend = () => {
-      // Will be handled by stopRecording
-    };
-
     r.start();
     setTranscript("");
     setStage("recording");
@@ -87,11 +130,10 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
     recogRef.current = null;
   }, []);
 
+  // ── Parse ────────────────────────────────────────────────────────────────────
+
   const parseTranscript = useCallback(async (text: string) => {
-    if (!text.trim()) {
-      setStage("idle");
-      return;
-    }
+    if (!text.trim()) { setStage("idle"); return; }
     setStage("thinking");
     try {
       const res = await fetch("/api/parse-expense", {
@@ -101,9 +143,7 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
       });
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error ?? "Error");
-      setParsed(data);
-      setMonto(data.monto != null ? String(data.monto) : "");
-      setTarjeta(data.tarjeta ?? "");
+      setItems(toItems(data));
       setStage("confirm");
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : "Error");
@@ -111,14 +151,12 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
     }
   }, []);
 
-  // When recording ends naturally (silence), parse automatically
+  // Auto-parse when speech recognition ends naturally
   useEffect(() => {
     if (!recogRef.current) return;
     const r = recogRef.current;
     r.onend = () => {
-      if (stage === "recording") {
-        parseTranscript(transcript);
-      }
+      if (stage === "recording") parseTranscript(transcript);
     };
   }, [stage, transcript, parseTranscript]);
 
@@ -131,35 +169,42 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
     }
   }
 
+  // ── Save ─────────────────────────────────────────────────────────────────────
+
   async function handleConfirm() {
-    if (!parsed) return;
-    const montoNum = parseFloat(monto);
-    if (!montoNum || montoNum <= 0) return;
+    const allValid = items.every(
+      (it) => parseFloat(it.monto) > 0 && it.tarjeta
+    );
+    if (!allValid) return;
 
     setStage("saving");
+    const today = new Date().toISOString().slice(0, 10);
     try {
-      const payload: ExpensePayload = {
-        fecha: new Date().toISOString().slice(0, 10),
-        tipo: parsed.tipo,
-        categoria: parsed.categoria,
-        subcategoria: parsed.subcategoria,
-        nota: parsed.nota,
-        monto: montoNum,
-        tarjeta,
-        aMeses: false,
-      };
-      const res = await fetch("/api/expense", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error ?? "Error");
+      for (const it of items) {
+        const payload: ExpensePayload = {
+          fecha: today,
+          tipo: it.tipo,
+          categoria: it.categoria,
+          subcategoria: it.subcategoria,
+          nota: it.nota,
+          monto: parseFloat(it.monto),
+          tarjeta: it.tarjeta,
+          aMeses: false,
+        };
+        const res = await fetch("/api/expense", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error ?? "Error");
+      }
+      setSavedCount(items.length);
       setStage("done");
       setTimeout(() => {
         setStage("idle");
         setTranscript("");
-        setParsed(null);
+        setItems([]);
         setTextInput("");
       }, 2500);
     } catch (err) {
@@ -168,20 +213,19 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
     }
   }
 
+  // Send first item to main form (only shown for single-item results)
   function handleEdit() {
-    if (!parsed) return;
+    if (!items.length) return;
+    const it = items[0];
     onConfirm({
-      tipo: parsed.tipo,
-      categoria: parsed.categoria,
-      subcategoria: parsed.subcategoria,
-      nota: parsed.nota,
-      monto: parseFloat(monto) || 0,
-      tarjeta: tarjeta || undefined,
+      tipo: it.tipo,
+      categoria: it.categoria,
+      subcategoria: it.subcategoria,
+      nota: it.nota,
+      monto: parseFloat(it.monto) || 0,
+      tarjeta: it.tarjeta || undefined,
     });
-    setStage("idle");
-    setTranscript("");
-    setParsed(null);
-    setTextInput("");
+    reset();
   }
 
   function reset() {
@@ -189,20 +233,23 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
     recogRef.current = null;
     setStage("idle");
     setTranscript("");
-    setParsed(null);
+    setItems([]);
     setErrorMsg("");
     setTextInput("");
   }
 
-  const catOptions = parsed
-    ? Object.keys(CATEGORIAS[parsed.tipo] ?? {})
-    : [];
-  const subOptions =
-    parsed && parsed.categoria
-      ? (CATEGORIAS[parsed.tipo]?.[parsed.categoria] ?? [])
-      : [];
+  // ── Can save? ─────────────────────────────────────────────────────────────────
 
-  // ── Idle / text fallback ──────────────────────────────────────────────────
+  const canSave =
+    items.length > 0 &&
+    items.every((it) => parseFloat(it.monto) > 0 && it.tarjeta);
+
+  const missingMonto = items.some((it) => !parseFloat(it.monto));
+  const missingTarjeta = items.some((it) => !it.tarjeta);
+
+  // ── Render ────────────────────────────────────────────────────────────────────
+
+  // Idle
   if (stage === "idle") {
     return (
       <div className="rounded-2xl bg-gray-900 border border-gray-800 p-4 space-y-3">
@@ -215,7 +262,7 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
           </span>
         </div>
 
-        {supported ? (
+        {supported && (
           <div className="flex flex-col items-center gap-2 py-2">
             <button
               type="button"
@@ -225,13 +272,10 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
             >
               🎙️
             </button>
-            <p className="text-xs text-gray-500">
-              Toca y describe el gasto
-            </p>
+            <p className="text-xs text-gray-500">Toca y describe el gasto</p>
           </div>
-        ) : null}
+        )}
 
-        {/* Text fallback (always available) */}
         <div className="flex gap-2">
           <input
             type="text"
@@ -240,8 +284,8 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
             onKeyDown={(e) => e.key === "Enter" && parseTranscript(textInput)}
             placeholder={
               supported
-                ? "O escribe: Uber al trabajo 85 pesos"
-                : "Describe el gasto: Uber al trabajo 85 pesos"
+                ? "O escribe: Tacos y Uber al trabajo"
+                : "Describe el gasto: Tacos y Uber al trabajo"
             }
             className="flex-1 rounded-lg bg-gray-800 border border-gray-700 text-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 placeholder-gray-500"
           />
@@ -258,7 +302,7 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
     );
   }
 
-  // ── Recording ─────────────────────────────────────────────────────────────
+  // Recording
   if (stage === "recording") {
     return (
       <div className="rounded-2xl bg-gray-900 border border-violet-700 p-4 space-y-3">
@@ -266,11 +310,7 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
           <span className="text-xs text-violet-400 font-medium animate-pulse">
             ● Escuchando…
           </span>
-          <button
-            type="button"
-            onClick={reset}
-            className="text-xs text-gray-500 hover:text-gray-300"
-          >
+          <button type="button" onClick={reset} className="text-xs text-gray-500 hover:text-gray-300">
             Cancelar
           </button>
         </div>
@@ -279,22 +319,19 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
             type="button"
             onClick={handleMicClick}
             className="flex h-16 w-16 items-center justify-center rounded-full bg-red-600 hover:bg-red-500 shadow-lg shadow-red-900/50 animate-pulse transition-all text-2xl"
-            aria-label="Detener grabación"
           >
             🎙️
           </button>
           <p className="text-xs text-gray-400">Toca para detener</p>
         </div>
         {transcript && (
-          <p className="text-sm text-gray-300 text-center italic">
-            &ldquo;{transcript}&rdquo;
-          </p>
+          <p className="text-sm text-gray-300 text-center italic">&ldquo;{transcript}&rdquo;</p>
         )}
       </div>
     );
   }
 
-  // ── Thinking ──────────────────────────────────────────────────────────────
+  // Thinking
   if (stage === "thinking") {
     return (
       <div className="rounded-2xl bg-gray-900 border border-gray-800 p-4">
@@ -302,169 +339,159 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
           <div className="h-8 w-8 rounded-full border-2 border-violet-500 border-t-transparent animate-spin" />
           <p className="text-sm text-gray-400">Interpretando…</p>
           {transcript && (
-            <p className="text-xs text-gray-600 italic text-center">
-              &ldquo;{transcript}&rdquo;
-            </p>
+            <p className="text-xs text-gray-600 italic text-center">&ldquo;{transcript}&rdquo;</p>
           )}
         </div>
       </div>
     );
   }
 
-  // ── Confirm ───────────────────────────────────────────────────────────────
-  if (stage === "confirm" && parsed) {
-    const montoNum = parseFloat(monto);
-    const canSave = montoNum > 0 && tarjeta;
-
+  // Confirm — one card per parsed expense
+  if (stage === "confirm" && items.length > 0) {
     return (
       <div className="rounded-2xl bg-gray-900 border border-emerald-800/60 p-4 space-y-4">
+        {/* Header */}
         <div className="flex items-center justify-between">
-          <span className="text-xs font-medium text-emerald-400">
-            ✦ Claude interpretó
-          </span>
-          <button
-            type="button"
-            onClick={reset}
-            className="text-xs text-gray-500 hover:text-gray-300"
-          >
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-emerald-400">
+              ✦ Claude interpretó
+            </span>
+            {items.length > 1 && (
+              <span className="text-xs bg-emerald-900/50 border border-emerald-700/50 text-emerald-300 rounded-full px-2 py-0.5">
+                {items.length} gastos
+              </span>
+            )}
+          </div>
+          <button type="button" onClick={reset} className="text-xs text-gray-500 hover:text-gray-300">
             ✕ Cancelar
           </button>
         </div>
 
-        {transcript && (
+        {(transcript || textInput) && (
           <p className="text-xs text-gray-500 italic">
             &ldquo;{transcript || textInput}&rdquo;
           </p>
         )}
 
-        {/* Parsed fields */}
-        <div className="space-y-2.5">
-          {/* Tipo / Categoría / Subcategoría read-only pills */}
-          <div className="flex flex-wrap gap-1.5">
-            <span className="rounded-full bg-gray-800 border border-gray-700 text-gray-300 px-2.5 py-1 text-xs">
-              {parsed.tipo}
-            </span>
-            <span className="rounded-full bg-gray-800 border border-gray-700 text-gray-300 px-2.5 py-1 text-xs">
-              {parsed.categoria}
-            </span>
-            <span className="rounded-full bg-violet-950/50 border border-violet-800/50 text-violet-300 px-2.5 py-1 text-xs font-medium">
-              {parsed.subcategoria}
-            </span>
-          </div>
+        {/* One card per expense */}
+        <div className="space-y-3">
+          {items.map((item, idx) => {
+            const catOptions = Object.keys(CATEGORIAS[item.tipo] ?? {});
+            const subOptions = CATEGORIAS[item.tipo]?.[item.categoria] ?? [];
 
-          {/* Nota */}
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Nota</label>
-            <input
-              type="text"
-              value={parsed.nota}
-              onChange={(e) =>
-                setParsed((p) => p && { ...p, nota: e.target.value })
-              }
-              className="w-full rounded-lg bg-gray-800 border border-gray-700 text-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
-            />
-          </div>
-
-          {/* Categoría override (if wrong) */}
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">
-                Categoría
-              </label>
-              <select
-                value={parsed.categoria}
-                onChange={(e) => {
-                  const cat = e.target.value;
-                  const subs = CATEGORIAS[parsed.tipo]?.[cat] ?? [];
-                  setParsed((p) =>
-                    p && { ...p, categoria: cat, subcategoria: subs[0] ?? "" }
-                  );
-                }}
-                className="w-full rounded-lg bg-gray-800 border border-gray-700 text-white px-2 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-violet-500"
+            return (
+              <div
+                key={idx}
+                className="rounded-xl bg-gray-800/60 border border-gray-700 p-3 space-y-2.5"
               >
-                {catOptions.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">
-                Subcategoría
-              </label>
-              <select
-                value={parsed.subcategoria}
-                onChange={(e) =>
-                  setParsed((p) => p && { ...p, subcategoria: e.target.value })
-                }
-                className="w-full rounded-lg bg-gray-800 border border-gray-700 text-white px-2 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-violet-500"
-              >
-                {subOptions.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
+                {/* Category pills */}
+                <div className="flex flex-wrap gap-1.5">
+                  <span className="rounded-full bg-gray-700 text-gray-300 px-2.5 py-1 text-xs">
+                    {item.tipo}
+                  </span>
+                  <span className="rounded-full bg-violet-950/60 border border-violet-800/50 text-violet-300 px-2.5 py-1 text-xs font-medium">
+                    {item.subcategoria}
+                  </span>
+                </div>
 
-          {/* Monto */}
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">
-              Monto ($){" "}
-              {!monto && (
-                <span className="text-amber-500">— ingresa el monto</span>
-              )}
-            </label>
-            <input
-              type="number"
-              inputMode="decimal"
-              min="0"
-              step="0.01"
-              value={monto}
-              onChange={(e) => setMonto(e.target.value)}
-              placeholder="0.00"
-              className="w-full rounded-lg bg-gray-800 border border-gray-700 text-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 placeholder-gray-500"
-              autoFocus={!monto}
-            />
-          </div>
+                {/* Nota */}
+                <input
+                  type="text"
+                  value={item.nota}
+                  onChange={(e) => setField(idx, "nota", e.target.value)}
+                  placeholder="Nota"
+                  className="w-full rounded-lg bg-gray-800 border border-gray-700 text-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+                />
 
-          {/* Tarjeta */}
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">
-              Tarjeta{" "}
-              {!tarjeta && (
-                <span className="text-amber-500">— selecciona</span>
-              )}
-            </label>
-            <CardSelect value={tarjeta} onChange={setTarjeta} id="voice-tarjeta" />
-          </div>
+                {/* Categoría / Subcategoría */}
+                <div className="grid grid-cols-2 gap-2">
+                  <select
+                    value={item.categoria}
+                    onChange={(e) => handleCatChange(idx, e.target.value)}
+                    className="w-full rounded-lg bg-gray-800 border border-gray-700 text-white px-2 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-violet-500"
+                  >
+                    {catOptions.map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={item.subcategoria}
+                    onChange={(e) => setField(idx, "subcategoria", e.target.value)}
+                    className="w-full rounded-lg bg-gray-800 border border-gray-700 text-white px-2 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-violet-500"
+                  >
+                    {subOptions.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Monto + Tarjeta */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">
+                      Monto ($)
+                      {!item.monto && <span className="text-amber-500 ml-1">*</span>}
+                    </label>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      step="0.01"
+                      value={item.monto}
+                      onChange={(e) => setField(idx, "monto", e.target.value)}
+                      placeholder="0.00"
+                      className="w-full rounded-lg bg-gray-800 border border-gray-700 text-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 placeholder-gray-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">
+                      Tarjeta
+                      {!item.tarjeta && <span className="text-amber-500 ml-1">*</span>}
+                    </label>
+                    <CardSelect
+                      value={item.tarjeta}
+                      onChange={(v) => setField(idx, "tarjeta", v)}
+                      id={`voice-tarjeta-${idx}`}
+                    />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
+        {/* Missing fields hint */}
+        {(missingMonto || missingTarjeta) && (
+          <p className="text-xs text-amber-400">
+            * Completa los campos marcados para guardar
+          </p>
+        )}
+
         {/* Actions */}
-        <div className="flex gap-2 pt-1">
-          <button
-            type="button"
-            onClick={handleEdit}
-            className="flex-1 rounded-xl border border-gray-700 text-gray-300 py-3 text-sm hover:bg-gray-800 transition-colors"
-          >
-            Editar en formulario
-          </button>
+        <div className="flex gap-2">
+          {items.length === 1 && (
+            <button
+              type="button"
+              onClick={handleEdit}
+              className="flex-1 rounded-xl border border-gray-700 text-gray-300 py-3 text-sm hover:bg-gray-800 transition-colors"
+            >
+              Editar en formulario
+            </button>
+          )}
           <button
             type="button"
             onClick={handleConfirm}
             disabled={!canSave}
             className="flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-semibold py-3 text-sm transition-colors"
           >
-            Guardar ✓
+            {items.length > 1 ? `Guardar los ${items.length} ✓` : "Guardar ✓"}
           </button>
         </div>
       </div>
     );
   }
 
-  // ── Saving ────────────────────────────────────────────────────────────────
+  // Saving
   if (stage === "saving") {
     return (
       <div className="rounded-2xl bg-gray-900 border border-gray-800 p-4">
@@ -476,21 +503,23 @@ export default function VoiceInput({ onConfirm }: VoiceInputProps) {
     );
   }
 
-  // ── Done ──────────────────────────────────────────────────────────────────
+  // Done
   if (stage === "done") {
     return (
       <div className="rounded-2xl bg-emerald-900/30 border border-emerald-700 p-4">
         <div className="flex flex-col items-center gap-2 py-3">
           <p className="text-2xl">✓</p>
           <p className="text-sm font-medium text-emerald-300">
-            Guardado en Google Sheets
+            {savedCount > 1
+              ? `${savedCount} gastos guardados en Google Sheets`
+              : "Guardado en Google Sheets"}
           </p>
         </div>
       </div>
     );
   }
 
-  // ── Error ─────────────────────────────────────────────────────────────────
+  // Error
   return (
     <div className="rounded-2xl bg-red-900/30 border border-red-700 p-4 space-y-3">
       <p className="text-sm text-red-300">✗ {errorMsg}</p>

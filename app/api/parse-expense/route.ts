@@ -4,29 +4,32 @@ import { CATEGORIAS, TARJETAS } from "@/lib/data";
 
 const client = new Anthropic();
 
-const SYSTEM = `Eres un asistente de finanzas personales mexicano. El usuario describirá un gasto en lenguaje natural y tú extraes los campos del formulario.
+const SYSTEM = `Eres un asistente de finanzas personales mexicano. El usuario describirá uno o varios gastos en lenguaje natural y tú extraes los campos del formulario.
 
 Estructura de categorías disponibles:
 ${JSON.stringify(CATEGORIAS, null, 2)}
 
 Tarjetas disponibles: ${TARJETAS.join(", ")}
 
-Devuelve ÚNICAMENTE un objeto JSON válido, sin markdown ni explicaciones:
-{
-  "tipo": "Gasto" | "Ingreso" | "Ahorro",
-  "categoria": string,
-  "subcategoria": string,
-  "nota": string,
-  "monto": number | null,
-  "tarjeta": string | null
-}
+Devuelve SIEMPRE un array JSON (aunque sea un solo gasto), sin markdown ni explicaciones:
+[
+  {
+    "tipo": "Gasto" | "Ingreso" | "Ahorro",
+    "categoria": string,
+    "subcategoria": string,
+    "nota": string,
+    "monto": number | null,
+    "tarjeta": string | null
+  }
+]
 
 Reglas:
-- nota: descripción limpia y corta del gasto (ej: "Uber al trabajo")
+- Si el usuario menciona varios gastos separados (ej: "tacos y uber"), crea un objeto por cada gasto
+- nota: descripción limpia y corta de cada gasto (ej: "Tacos", "Uber al trabajo")
 - monto: número si se menciona ("cien" → 100, "50 pesos" → 50), si no → null
-- tarjeta: solo si se menciona explícitamente, si no → null
+- tarjeta: solo si se menciona explícitamente, si no → null; si aplica a todos los gastos mencionados, ponla en cada uno
 - Uber, taxi, Didi, gasolina, camión, metro → subcategoria "Transporte", categoria "Gastos Fijos"
-- Comida, restaurant, café, lunch, antojitos, pizza → subcategoria "Comida fuera", categoria "Gastos Variables"
+- Comida, restaurant, café, lunch, antojitos, pizza, tacos → subcategoria "Comida fuera", categoria "Gastos Variables"
 - Super, Walmart, Chedraui, mercado, despensa → subcategoria "Supermercado", categoria "Gastos Variables"
 - Netflix, Spotify, suscripción → subcategoria "Suscripciones", categoria "Gastos Fijos"
 - Farmacia, médico, medicamento → subcategoria "Salud", categoria "Gastos Variables"
