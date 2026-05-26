@@ -57,8 +57,10 @@ export async function POST(req: NextRequest) {
       messages: [{ role: "user", content: transcript }],
     });
 
-    const text =
+    const raw =
       msg.content[0].type === "text" ? msg.content[0].text.trim() : "{}";
+    // Strip markdown code fences if the model wraps the JSON
+    const text = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
     const parsed = JSON.parse(text);
     return NextResponse.json(parsed);
   } catch (err) {
