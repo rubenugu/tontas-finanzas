@@ -3,6 +3,7 @@
 import { useState, useCallback } from "react";
 import ExpenseForm from "@/components/ExpenseForm";
 import QuickFillBar from "@/components/QuickFillBar";
+import VoiceInput from "@/components/VoiceInput";
 import { ExpensePayload } from "@/lib/data";
 
 export default function Home() {
@@ -34,6 +35,14 @@ export default function Home() {
             Accesos rápidos
           </p>
           <QuickFillBar onFill={handleFill} />
+        </section>
+
+        {/* Divider */}
+        <div className="border-t border-gray-800 mb-6" />
+
+        {/* Voice / AI input */}
+        <section className="mb-6">
+          <VoiceInput onConfirm={handleFill} />
         </section>
 
         {/* Divider */}

@@ -52,17 +52,25 @@ function doPost(e) {
 
 ---
 
-## 2. Configurar la URL en el proyecto
+## 2. Anthropic API Key (para la función de dictado con IA)
 
-Edita el archivo `.env.local` y reemplaza `PEGA_TU_URL_AQUI` con la URL que copiaste:
+1. Ve a [console.anthropic.com](https://console.anthropic.com) → **API Keys** → crea una nueva
+2. Cópiala
+
+---
+
+## 3. Configurar variables de entorno
+
+Edita `.env.local` con tus dos valores:
 
 ```
 APPS_SCRIPT_URL=https://script.google.com/macros/s/TU_ID_REAL/exec
+ANTHROPIC_API_KEY=sk-ant-TU_KEY_REAL
 ```
 
 ---
 
-## 3. Correr localmente
+## 4. Correr localmente
 
 ```bash
 npm install
@@ -73,13 +81,13 @@ Abre http://localhost:3000
 
 ---
 
-## 4. Deploy en Vercel
+## 5. Deploy en Vercel
 
 1. Sube el proyecto a GitHub
 2. En [vercel.com](https://vercel.com), importa el repositorio
-3. En **Settings → Environment Variables**, agrega:
-   - **Name:** `APPS_SCRIPT_URL`
-   - **Value:** tu URL de Apps Script
+3. En **Settings → Environment Variables**, agrega **ambas** variables:
+   - `APPS_SCRIPT_URL` → tu URL de Apps Script
+   - `ANTHROPIC_API_KEY` → tu API key de Anthropic
 4. Despliega
 
 La app estará disponible en tu URL de Vercel para usar desde el celular.
